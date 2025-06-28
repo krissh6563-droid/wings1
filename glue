@@ -1,0 +1,55 @@
+import sys
+from awsglue.transforms import *
+from awsglue.utils import getResolvedOptions
+from pyspark.context import SparkContext
+from awsglue.context import GlueContext
+from awsglue.job import Job
+from pyspark.sql.functions import col, count
+
+args = getResolvedOptions(sys.argv, ['JOB_NAME'])
+sc = SparkContext()
+glueContext = GlueContext(sc)
+spark = glueContext.spark_session
+job = Job(glueContext)
+job.init(args['JOB_NAME'], args)
+
+# Load source data from Glue Catalog (S3 source)
+datasource = glueContext.create_dynamic_frame.from_catalog(
+    database="employees_db",
+    table_name="employee_data"
+)
+
+# Convert to DataFrame for transformations
+df = datasource.toDF()
+
+# Task 1: Data Cleaning - Filter employees with age > 25
+filtered_df = df.filter(col("age") > 25)
+
+# Write cleaned data to Redshift (Table: employees_cleaned_data)
+cleaned_dynamic_frame = DynamicFrame.fromDF(filtered_df, glueContext, "cleaned_df")
+glueContext.write_dynamic_frame.from_jdbc_conf(
+    frame=cleaned_dynamic_frame,
+    catalog_connection="redshift_connection",
+    connection_options={
+        "dbtable": "employees_cleaned_data",
+        "database": "dev",
+        "schema": "public"
+    }
+)
+
+# Task 2: Data Transformation - Departmental Analysis
+dept_count_df = filtered_df.groupBy("department").agg(count("*").alias("Employees_count"))
+
+# Write department count data to Redshift (Table: employees_dept_count)
+dept_dynamic_frame = DynamicFrame.fromDF(dept_count_df, glueContext, "dept_df")
+glueContext.write_dynamic_frame.from_jdbc_conf(
+    frame=dept_dynamic_frame,
+    catalog_connection="redshift_connection",
+    connection_options={
+        "dbtable": "employees_dept_count",
+        "database": "dev",
+        "schema": "public"
+    }
+)
+
+job.commit()
